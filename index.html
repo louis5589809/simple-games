@@ -3,153 +3,451 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D PolyTrack Prototype</title>
+    <title>PolyTrack 3D Engine Architecture</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; }
-        #ui {
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        
+        /* UI OVERLAY */
+        #hud {
             position: absolute;
-            top: 20px;
-            left: 20px;
-            color: #fff;
-            font-size: 18px;
-            font-weight: bold;
+            top: 0; left: 0; width: 100%; height: 100%;
             pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 30px;
+        }
+        .hud-panel {
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 15px 25px;
+            color: #fff;
+        }
+        .top-row { display: flex; justify-content: space-between; align-items: flex-start; }
+        .timer { font-size: 32px; font-weight: 800; font-family: monospace; color: #ffeb3b; }
+        .speedometer { font-size: 48px; font-weight: 900; text-align: right; }
+        .speed-unit { font-size: 16px; color: #888; font-weight: 400; }
+        
+        .controls-hint {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 14px;
+            color: #aaa;
+            letter-spacing: 1px;
+            text-transform: uppercase;
         }
     </style>
-    <!-- Three.js CDN -->
+    <!-- Three.js Library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
-    <div id="ui">Use WASD or Arrow Keys to Drive</div>
+    <div id="canvas-container"></div>
+    
+    <div id="hud">
+        <div class="top-row">
+            <div class="hud-panel">
+                <div>CURRENT LAP</div>
+                <div id="timer" class="timer">00:00.000</div>
+            </div>
+            <div class="hud-panel">
+                <div id="speed" class="speedometer">0</div>
+                <div class="speed-unit">KM/H</div>
+            </div>
+        </div>
+        <div class="controls-hint">
+            [WASD / Arrows] Drive | [Space] Handbrake | [C] Camera View | [R] Reset
+        </div>
+    </div>
 
     <script>
-        // --- 1. SCENE & RENDERER SETUP ---
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87ceeb); // Sky blue
+        /**
+         * POLYTRACK 3D GAME ENGINE MODULES
+         * 1. Configuration & Constants
+         * 2. Particle System (Exhaust & Dust)
+         * 3. Vehicle Physics & Model
+         * 4. Track & Environment Generator
+         * 5. Camera & View System
+         * 6. Core Game Loop Manager
+         */
 
-        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.shadowMap.enabled = true;
-        document.body.appendChild(renderer.domElement);
-
-        // --- 2. LIGHTING ---
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-        scene.add(ambientLight);
-
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        dirLight.position.set(50, 100, 50);
-        dirLight.castShadow = true;
-        scene.add(dirLight);
-
-        // --- 3. TRACK (LOW-POLY ROAD) ---
-        const trackGroup = new THREE.Group();
-        const roadMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.8 });
-        
-        // Loop to make a simple oval track out of road blocks
-        const createTrackSegment = (x, z, rotY) => {
-            const geo = new THREE.BoxGeometry(10, 0.5, 10);
-            const mesh = new THREE.Mesh(geo, roadMaterial);
-            mesh.position.set(x, 0, z);
-            mesh.rotation.y = rotY;
-            mesh.receiveShadow = true;
-            trackGroup.add(mesh);
+        // ==========================================
+        // 1. CONFIGURATION & ENGINE CONSTANTS
+        // ==========================================
+        const CONFIG = {
+            WORLD: { gravity: -25, airResistance: 0.98 },
+            VEHICLE: {
+                maxSpeed: 1.2,
+                acceleration: 0.025,
+                reverseMax: 0.4,
+                brakePower: 0.04,
+                friction: 0.96,
+                steeringSpeed: 0.045,
+                driftFactor: 0.85
+            },
+            TRACK: { gridUnit: 10, roadWidth: 8 }
         };
 
-        // Build a ground plane
-        const groundGeo = new THREE.PlaneGeometry(300, 300);
-        const groundMat = new THREE.MeshStandardMaterial({ color: 0x55aa55 });
-        const ground = new THREE.Mesh(groundGeo, groundMat);
-        ground.rotation.x = -Math.PI / 2;
-        ground.position.y = -0.3;
-        ground.receiveShadow = true;
-        scene.add(ground);
-
-        // Build a simple circuit
-        for (let i = -50; i <= 50; i += 10) {
-            createTrackSegment(i, -30, 0); // Straight 1
-            createTrackSegment(i, 30, 0);  // Straight 2
-        }
-        for (let i = -30; i <= 30; i += 10) {
-            createTrackSegment(-50, i, Math.PI / 2); // Curve 1
-            createTrackSegment(50, i, Math.PI / 2);  // Curve 2
-        }
-        scene.add(trackGroup);
-
-        // --- 4. CAR (POLY-STYLE MESH) ---
-        const car = new THREE.Group();
-        
-        // Car Body
-        const bodyGeo = new THREE.BoxGeometry(2, 0.8, 4);
-        const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff2222, roughness: 0.3 });
-        const body = new THREE.Mesh(bodyGeo, bodyMat);
-        body.position.y = 0.5;
-        body.castShadow = true;
-        car.add(body);
-
-        // Cabin
-        const cabinGeo = new THREE.BoxGeometry(1.6, 0.6, 2);
-        const cabinMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
-        const cabin = new THREE.Mesh(cabinGeo, cabinMat);
-        cabin.position.set(0, 1, -0.2);
-        car.add(cabin);
-
-        car.position.set(0, 0.5, -30); // Starting line position
-        scene.add(car);
-
-        // --- 5. DRIVING PHYSICS & CONTROLS ---
-        const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, w: false, s: false, a: false, d: false };
-        let speed = 0;
-        let maxSpeed = 0.8;
-        let acceleration = 0.02;
-        let friction = 0.96;
-        let turnSpeed = 0.04;
-
-        window.addEventListener('keydown', (e) => keys[e.key] = true);
-        window.addEventListener('keyup', (e) => keys[e.key] = false);
-
-        // --- 6. GAME LOOP ---
-        function animate() {
-            requestAnimationFrame(animate);
-
-            // Forward / Backward inputs
-            if (keys.ArrowUp || keys.w) speed = Math.min(speed + acceleration, maxSpeed);
-            if (keys.ArrowDown || keys.s) speed = Math.max(speed - acceleration, -maxSpeed / 2);
-
-            // Friction
-            speed *= friction;
-
-            // Steering (only steer if moving)
-            if (Math.abs(speed) > 0.01) {
-                const dir = speed > 0 ? 1 : -1;
-                if (keys.ArrowLeft || keys.a) car.rotation.y += turnSpeed * dir;
-                if (keys.ArrowRight || keys.d) car.rotation.y -= turnSpeed * dir;
+        // ==========================================
+        // 2. PARTICLE ENGINE
+        // ==========================================
+        class ParticleSystem {
+            constructor(scene) {
+                this.scene = scene;
+                this.particles = [];
+                const geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+                const mat = new THREE.MeshBasicMaterial({ color: 0xcccccc, transparent: true, opacity: 0.6 });
+                this.instancedMesh = new THREE.InstancedMesh(geo, mat, 200);
+                this.scene.add(this.instancedMesh);
+                this.dummy = new THREE.Object3D();
             }
 
-            // Move Car Forward
-            car.position.x += Math.sin(car.rotation.y) * speed;
-            car.position.z += Math.cos(car.rotation.y) * speed;
+            emit(position, velocity) {
+                this.particles.push({
+                    pos: position.clone(),
+                    vel: velocity.clone(),
+                    scale: 1.0,
+                    life: 1.0
+                });
+                if (this.particles.length > 200) this.particles.shift();
+            }
 
-            // Chase Camera
-            const cameraOffset = new THREE.Vector3(
-                -Math.sin(car.rotation.y) * 12,
-                6,
-                -Math.cos(car.rotation.y) * 12
-            );
-            camera.position.copy(car.position).add(cameraOffset);
-            camera.lookAt(car.position);
+            update() {
+                let count = 0;
+                for (let i = this.particles.length - 1; i >= 0; i--) {
+                    const p = this.particles[i];
+                    p.life -= 0.03;
+                    if (p.life <= 0) {
+                        this.particles.splice(i, 1);
+                        continue;
+                    }
+                    p.pos.add(p.vel);
+                    p.scale = p.life * 1.5;
 
-            renderer.render(scene, camera);
+                    this.dummy.position.copy(p.pos);
+                    this.dummy.scale.set(p.scale, p.scale, p.scale);
+                    this.dummy.updateMatrix();
+                    this.instancedMesh.setMatrixAt(count++, this.dummy.matrix);
+                }
+                this.instancedMesh.count = count;
+                this.instancedMesh.instanceMatrix.needsUpdate = true;
+            }
         }
 
-        // Handle Window Resize
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+        // ==========================================
+        // 3. VEHICLE CONTROLLER & PHYSICS
+        // ==========================================
+        class Vehicle {
+            constructor(scene, particles) {
+                this.scene = scene;
+                this.particles = particles;
+                this.mesh = new THREE.Group();
+                
+                // Physics state
+                this.position = new THREE.Vector3(0, 0.5, 0);
+                this.velocity = new THREE.Vector3();
+                this.rotation = 0;
+                this.speed = 0;
+                this.steering = 0;
+                this.isGrounded = true;
 
-        animate();
+                this.buildCarModel();
+                this.scene.add(this.mesh);
+            }
+
+            buildCarModel() {
+                // Main Chasis
+                const bodyGeo = new THREE.BoxGeometry(2, 0.7, 4);
+                const bodyMat = new THREE.MeshStandardMaterial({ color: 0xe63946, roughness: 0.2, metalness: 0.5 });
+                const body = new THREE.Mesh(bodyGeo, bodyMat);
+                body.position.y = 0.5;
+                body.castShadow = true;
+                this.mesh.add(body);
+
+                // Cabin / Windshield
+                const cabinGeo = new THREE.BoxGeometry(1.6, 0.6, 1.8);
+                const cabinMat = new THREE.MeshStandardMaterial({ color: 0x1d3557, roughness: 0.1 });
+                const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+                cabin.position.set(0, 1.1, -0.2);
+                this.mesh.add(cabin);
+
+                // Wheels Assembly
+                const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.3, 16);
+                const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+                wheelGeo.rotateZ(Math.PI / 2);
+
+                this.wheels = [];
+                const positions = [
+                    [-1.1, 0.4, 1.2],  // Front Left
+                    [1.1, 0.4, 1.2],   // Front Right
+                    [-1.1, 0.4, -1.2], // Rear Left
+                    [1.1, 0.4, -1.2]   // Rear Right
+                ];
+
+                positions.forEach(pos => {
+                    const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+                    wheel.position.set(...pos);
+                    wheel.castShadow = true;
+                    this.mesh.add(wheel);
+                    this.wheels.push(wheel);
+                });
+            }
+
+            update(inputs) {
+                // Driving Logic
+                if (inputs.forward) {
+                    this.speed = Math.min(this.speed + CONFIG.VEHICLE.acceleration, CONFIG.VEHICLE.maxSpeed);
+                } else if (inputs.backward) {
+                    this.speed = Math.max(this.speed - CONFIG.VEHICLE.acceleration, -CONFIG.VEHICLE.reverseMax);
+                } else {
+                    this.speed *= CONFIG.VEHICLE.friction;
+                }
+
+                if (inputs.handbrake) {
+                    this.speed *= 0.92;
+                }
+
+                // Steering Logic
+                if (Math.abs(speed) > 0.05) {
+                    const dir = this.speed > 0 ? 1 : -1;
+                    if (inputs.left) this.rotation += CONFIG.VEHICLE.steeringSpeed * dir;
+                    if (inputs.right) this.rotation -= CONFIG.VEHICLE.steeringSpeed * dir;
+                }
+
+                // Update Mesh Rotations & Wheels
+                this.mesh.rotation.y = this.rotation;
+                this.wheels[0].rotation.y = inputs.left ? 0.3 : inputs.right ? -0.3 : 0;
+                this.wheels[1].rotation.y = this.wheels[0].rotation.y;
+
+                // Position Translation
+                this.position.x += Math.sin(this.rotation) * this.speed;
+                this.position.z += Math.cos(this.rotation) * this.speed;
+                this.mesh.position.copy(this.position);
+
+                // Particle Emitter
+                if (Math.abs(this.speed) > 0.3) {
+                    const exhaustPos = this.position.clone().add(
+                        new THREE.Vector3(-Math.sin(this.rotation) * 2, 0.2, -Math.cos(this.rotation) * 2)
+                    );
+                    this.particles.emit(exhaustPos, new THREE.Vector3(0, 0.05, 0));
+                }
+            }
+
+            reset() {
+                this.position.set(0, 0.5, 0);
+                this.speed = 0;
+                this.rotation = 0;
+            }
+        }
+
+        // ==========================================
+        // 4. ENVIRONMENT & TRACK ARCHITECTURE
+        // ==========================================
+        class EnvironmentManager {
+            constructor(scene) {
+                this.scene = scene;
+                this.initLights();
+                this.buildTerrain();
+                this.buildTrack();
+            }
+
+            initLights() {
+                const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+                this.scene.add(ambient);
+
+                const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+                sun.position.set(100, 150, 50);
+                sun.castShadow = true;
+                sun.shadow.mapSize.width = 2048;
+                sun.shadow.mapSize.height = 2048;
+                sun.shadow.camera.near = 0.5;
+                sun.shadow.camera.far = 500;
+                const d = 100;
+                sun.shadow.camera.left = -d;
+                sun.shadow.camera.right = d;
+                sun.shadow.camera.top = d;
+                sun.shadow.camera.bottom = -d;
+                this.scene.add(sun);
+            }
+
+            buildTerrain() {
+                const groundGeo = new THREE.PlaneGeometry(500, 500);
+                const groundMat = new THREE.MeshStandardMaterial({ color: 0x2a9d8f, roughness: 0.9 });
+                const ground = new THREE.Mesh(groundGeo, groundMat);
+                ground.rotation.x = -Math.PI / 2;
+                ground.position.y = -0.1;
+                ground.receiveShadow = true;
+                this.scene.add(ground);
+            }
+
+            buildTrack() {
+                const roadMat = new THREE.MeshStandardMaterial({ color: 0x2b2d42, roughness: 0.6 });
+                const curbMat = new THREE.MeshStandardMaterial({ color: 0xf4a261 });
+
+                // Constructing an expanded poly-track circuit
+                const trackNodes = [
+                    [0, 0], [0, 40], [20, 60], [60, 60], 
+                    [80, 40], [80, -20], [40, -40], [0, 0]
+                ];
+
+                for (let i = 0; i < trackNodes.length - 1; i++) {
+                    const start = new THREE.Vector2(...trackNodes[i]);
+                    const end = new THREE.Vector2(...trackNodes[i+1]);
+                    const distance = start.distanceTo(end);
+                    const angle = Math.atan2(end.x - start.x, end.y - start.y);
+
+                    const roadGeo = new THREE.BoxGeometry(CONFIG.TRACK.roadWidth, 0.2, distance);
+                    const road = new THREE.Mesh(roadGeo, roadMat);
+                    
+                    const midX = (start.x + end.x) / 2;
+                    const midY = (start.y + end.y) / 2;
+                    road.position.set(midX, 0, midY);
+                    road.rotation.y = angle;
+                    road.receiveShadow = true;
+                    this.scene.add(road);
+                }
+            }
+        }
+
+        // ==========================================
+        // 5. CAMERA SYSTEM
+        // ==========================================
+        class CameraSystem {
+            constructor(camera) {
+                this.camera = camera;
+                this.modes = ['CHASE', 'HOVER', 'FIRST_PERSON'];
+                this.currentMode = 0;
+            }
+
+            cycleMode() {
+                this.currentMode = (this.currentMode + 1) % this.modes.length;
+            }
+
+            update(target) {
+                const mode = this.modes[this.currentMode];
+                if (mode === 'CHASE') {
+                    const offset = new THREE.Vector3(
+                        -Math.sin(target.rotation) * 12,
+                        6,
+                        -Math.cos(target.rotation) * 12
+                    );
+                    this.camera.position.copy(target.position).add(offset);
+                    this.camera.lookAt(target.position.clone().add(new THREE.Vector3(0, 1, 0)));
+                } else if (mode === 'HOVER') {
+                    this.camera.position.set(target.position.x, 35, target.position.z - 20);
+                    this.camera.lookAt(target.position);
+                } else if (mode === 'FIRST_PERSON') {
+                    const offset = new THREE.Vector3(
+                        Math.sin(target.rotation) * 0.2,
+                        1.2,
+                        Math.cos(target.rotation) * 0.2
+                    );
+                    this.camera.position.copy(target.position).add(offset);
+                    const lookTarget = target.position.clone().add(
+                        new THREE.Vector3(Math.sin(target.rotation) * 10, 1, Math.cos(target.rotation) * 10)
+                    );
+                    this.camera.lookAt(lookTarget);
+                }
+            }
+        }
+
+        // ==========================================
+        // 6. CORE GAME INITIALIZATION & LOOP
+        // ==========================================
+        class GameEngine {
+            constructor() {
+                this.container = document.getElementById('canvas-container');
+                
+                // Scene & Renderer
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x90e0ef);
+                this.scene.fog = new THREE.FogExp2(0x90e0ef, 0.005);
+
+                this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.shadowMap.enabled = true;
+                this.container.appendChild(this.renderer.domElement);
+
+                // Systems
+                this.particles = new ParticleSystem(this.scene);
+                this.environment = new EnvironmentManager(this.scene);
+                this.vehicle = new Vehicle(this.scene, this.particles);
+                this.cameraSystem = new CameraSystem(this.camera);
+
+                // Input State
+                this.inputs = { forward: false, backward: false, left: false, right: false, handbrake: false };
+                this.bindInputs();
+
+                // UI
+                this.timerElement = document.getElementById('timer');
+                this.speedElement = document.getElementById('speed');
+                this.startTime = Date.now();
+
+                window.addEventListener('resize', () => this.onWindowResize());
+                this.loop();
+            }
+
+            bindInputs() {
+                window.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowUp' || e.key === 'w') this.inputs.forward = true;
+                    if (e.key === 'ArrowDown' || e.key === 's') this.inputs.backward = true;
+                    if (e.key === 'ArrowLeft' || e.key === 'a') this.inputs.left = true;
+                    if (e.key === 'ArrowRight' || e.key === 'd') this.inputs.right = true;
+                    if (e.key === ' ') this.inputs.handbrake = true;
+                    if (e.key === 'c' || e.key === 'C') this.cameraSystem.cycleMode();
+                    if (e.key === 'r' || e.key === 'R') this.vehicle.reset();
+                });
+
+                window.addEventListener('keyup', (e) => {
+                    if (e.key === 'ArrowUp' || e.key === 'w') this.inputs.forward = false;
+                    if (e.key === 'ArrowDown' || e.key === 's') this.inputs.backward = false;
+                    if (e.key === 'ArrowLeft' || e.key === 'a') this.inputs.left = false;
+                    if (e.key === 'ArrowRight' || e.key === 'd') this.inputs.right = false;
+                    if (e.key === ' ') this.inputs.handbrake = false;
+                });
+            }
+
+            updateUI() {
+                // Speedometer conversion
+                const displaySpeed = Math.floor(Math.abs(this.vehicle.speed) * 160);
+                this.speedElement.textContent = displaySpeed;
+
+                // Timer conversion
+                const elapsed = Date.now() - this.startTime;
+                const mins = Math.floor(elapsed / 60000).toString().padStart(2, '0');
+                const secs = Math.floor((elapsed % 60000) / 1000).toString().padStart(2, '0');
+                const ms = (elapsed % 1000).toString().padStart(3, '0');
+                this.timerElement.textContent = `${mins}:${secs}.${ms}`;
+            }
+
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+
+            loop() {
+                requestAnimationFrame(() => this.loop());
+
+                this.vehicle.update(this.inputs);
+                this.particles.update();
+                this.cameraSystem.update(this.vehicle);
+                this.updateUI();
+
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        // Run Engine on load
+        window.onload = () => {
+            new GameEngine();
+        };
     </script>
 </body>
 </html>
