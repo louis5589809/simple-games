@@ -1,172 +1,155 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Basic Snake HTML Game</title>
-  <meta charset="UTF-8">
-  <style>
-  html, body {
-    height: 100%;
-    margin: 0;
-  }
-
-  body {
-    background: black;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  canvas {
-    border: 1px solid white;
-  }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D PolyTrack Prototype</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            font-size: 18px;
+            font-weight: bold;
+            pointer-events: none;
+        }
+    </style>
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
-<canvas width="400" height="400" id="game"></canvas>
-<script>
-var canvas = document.getElementById('game');
-var context = canvas.getContext('2d');
+    <div id="ui">Use WASD or Arrow Keys to Drive</div>
 
-// the canvas width & height, snake x & y, and the apple x & y, all need to be a multiples of the grid size in order for collision detection to work
-// (e.g. 16 * 25 = 400)
-var grid = 16;
-var count = 0;
+    <script>
+        // --- 1. SCENE & RENDERER SETUP ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb); // Sky blue
 
-var snake = {
-  x: 160,
-  y: 160,
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
 
-  // snake velocity. moves one grid length every frame in either the x or y direction
-  dx: grid,
-  dy: 0,
+        // --- 2. LIGHTING ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
 
-  // keep track of all grids the snake body occupies
-  cells: [],
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(50, 100, 50);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
 
-  // length of the snake. grows when eating an apple
-  maxCells: 4
-};
-var apple = {
-  x: 320,
-  y: 320
-};
+        // --- 3. TRACK (LOW-POLY ROAD) ---
+        const trackGroup = new THREE.Group();
+        const roadMaterial = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.8 });
+        
+        // Loop to make a simple oval track out of road blocks
+        const createTrackSegment = (x, z, rotY) => {
+            const geo = new THREE.BoxGeometry(10, 0.5, 10);
+            const mesh = new THREE.Mesh(geo, roadMaterial);
+            mesh.position.set(x, 0, z);
+            mesh.rotation.y = rotY;
+            mesh.receiveShadow = true;
+            trackGroup.add(mesh);
+        };
 
-// get random whole numbers in a specific range
-// @see https://stackoverflow.com/a/1527820/2124254
-function getRandomInt(min, max) {
-  return Math.floor(Math.random() * (max - min)) + min;
-}
+        // Build a ground plane
+        const groundGeo = new THREE.PlaneGeometry(300, 300);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x55aa55 });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -0.3;
+        ground.receiveShadow = true;
+        scene.add(ground);
 
-// game loop
-function loop() {
-  requestAnimationFrame(loop);
+        // Build a simple circuit
+        for (let i = -50; i <= 50; i += 10) {
+            createTrackSegment(i, -30, 0); // Straight 1
+            createTrackSegment(i, 30, 0);  // Straight 2
+        }
+        for (let i = -30; i <= 30; i += 10) {
+            createTrackSegment(-50, i, Math.PI / 2); // Curve 1
+            createTrackSegment(50, i, Math.PI / 2);  // Curve 2
+        }
+        scene.add(trackGroup);
 
-  // slow game loop to 15 fps instead of 60 (60/15 = 4)
-  if (++count < 4) {
-    return;
-  }
+        // --- 4. CAR (POLY-STYLE MESH) ---
+        const car = new THREE.Group();
+        
+        // Car Body
+        const bodyGeo = new THREE.BoxGeometry(2, 0.8, 4);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff2222, roughness: 0.3 });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = 0.5;
+        body.castShadow = true;
+        car.add(body);
 
-  count = 0;
-  context.clearRect(0,0,canvas.width,canvas.height);
+        // Cabin
+        const cabinGeo = new THREE.BoxGeometry(1.6, 0.6, 2);
+        const cabinMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+        const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+        cabin.position.set(0, 1, -0.2);
+        car.add(cabin);
 
-  // move snake by it's velocity
-  snake.x += snake.dx;
-  snake.y += snake.dy;
+        car.position.set(0, 0.5, -30); // Starting line position
+        scene.add(car);
 
-  // wrap snake position horizontally on edge of screen
-  if (snake.x < 0) {
-    snake.x = canvas.width - grid;
-  }
-  else if (snake.x >= canvas.width) {
-    snake.x = 0;
-  }
+        // --- 5. DRIVING PHYSICS & CONTROLS ---
+        const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, w: false, s: false, a: false, d: false };
+        let speed = 0;
+        let maxSpeed = 0.8;
+        let acceleration = 0.02;
+        let friction = 0.96;
+        let turnSpeed = 0.04;
 
-  // wrap snake position vertically on edge of screen
-  if (snake.y < 0) {
-    snake.y = canvas.height - grid;
-  }
-  else if (snake.y >= canvas.height) {
-    snake.y = 0;
-  }
+        window.addEventListener('keydown', (e) => keys[e.key] = true);
+        window.addEventListener('keyup', (e) => keys[e.key] = false);
 
-  // keep track of where snake has been. front of the array is always the head
-  snake.cells.unshift({x: snake.x, y: snake.y});
+        // --- 6. GAME LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
 
-  // remove cells as we move away from them
-  if (snake.cells.length > snake.maxCells) {
-    snake.cells.pop();
-  }
+            // Forward / Backward inputs
+            if (keys.ArrowUp || keys.w) speed = Math.min(speed + acceleration, maxSpeed);
+            if (keys.ArrowDown || keys.s) speed = Math.max(speed - acceleration, -maxSpeed / 2);
 
-  // draw apple
-  context.fillStyle = 'red';
-  context.fillRect(apple.x, apple.y, grid-1, grid-1);
+            // Friction
+            speed *= friction;
 
-  // draw snake one cell at a time
-  context.fillStyle = 'green';
-  snake.cells.forEach(function(cell, index) {
+            // Steering (only steer if moving)
+            if (Math.abs(speed) > 0.01) {
+                const dir = speed > 0 ? 1 : -1;
+                if (keys.ArrowLeft || keys.a) car.rotation.y += turnSpeed * dir;
+                if (keys.ArrowRight || keys.d) car.rotation.y -= turnSpeed * dir;
+            }
 
-    // drawing 1 px smaller than the grid creates a grid effect in the snake body so you can see how long it is
-    context.fillRect(cell.x, cell.y, grid-1, grid-1);
+            // Move Car Forward
+            car.position.x += Math.sin(car.rotation.y) * speed;
+            car.position.z += Math.cos(car.rotation.y) * speed;
 
-    // snake ate apple
-    if (cell.x === apple.x && cell.y === apple.y) {
-      snake.maxCells++;
+            // Chase Camera
+            const cameraOffset = new THREE.Vector3(
+                -Math.sin(car.rotation.y) * 12,
+                6,
+                -Math.cos(car.rotation.y) * 12
+            );
+            camera.position.copy(car.position).add(cameraOffset);
+            camera.lookAt(car.position);
 
-      // canvas is 400x400 which is 25x25 grids
-      apple.x = getRandomInt(0, 25) * grid;
-      apple.y = getRandomInt(0, 25) * grid;
-    }
+            renderer.render(scene, camera);
+        }
 
-    // check collision with all cells after this one (modified bubble sort)
-    for (var i = index + 1; i < snake.cells.length; i++) {
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
 
-      // snake occupies same space as a body part. reset game
-      if (cell.x === snake.cells[i].x && cell.y === snake.cells[i].y) {
-        snake.x = 160;
-        snake.y = 160;
-        snake.cells = [];
-        snake.maxCells = 4;
-        snake.dx = grid;
-        snake.dy = 0;
-
-        apple.x = getRandomInt(0, 25) * grid;
-        apple.y = getRandomInt(0, 25) * grid;
-      }
-    }
-  });
-}
-
-// listen to keyboard events to move the snake
-document.addEventListener('keydown', function(e) {
-  // prevent snake from backtracking on itself by checking that it's
-  // not already moving on the same axis (pressing left while moving
-  // left won't do anything, and pressing right while moving left
-  // shouldn't let you collide with your own body)
-
-  // left arrow key
-  if (e.which === 37 && snake.dx === 0) {
-    snake.dx = -grid;
-    snake.dy = 0;
-  }
-  // up arrow key
-  else if (e.which === 38 && snake.dy === 0) {
-    snake.dy = -grid;
-    snake.dx = 0;
-  }
-  // right arrow key
-  else if (e.which === 39 && snake.dx === 0) {
-    snake.dx = grid;
-    snake.dy = 0;
-  }
-  // down arrow key
-  else if (e.which === 40 && snake.dy === 0) {
-    snake.dy = grid;
-    snake.dx = 0;
-  }
-});
-
-// start the game
-requestAnimationFrame(loop);
-</script>
+        animate();
+    </script>
 </body>
-</html>
 </html>
